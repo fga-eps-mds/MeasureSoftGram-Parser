@@ -4,6 +4,15 @@ import requests
 from datetime import datetime
 
 
+class GithubConnectionError(Exception):
+    """A API do GitHub nao respondeu (rede fora, DNS, timeout).
+
+    Diferente de um 403/404, que e resposta valida e deixa so a medida
+    dependente de fora: sem conexao, toda metrica sairia zerada como se o
+    repositorio nao tivesse atividade.
+    """
+
+
 class ParserGithub(GenericStaticABC):
     token = None
 
@@ -19,8 +28,8 @@ class ParserGithub(GenericStaticABC):
             headers["Authorization"] = f"Bearer {token}"
         try:
             response = requests.get(url, headers=headers)
-        except requests.exceptions.RequestException:
-            return {}
+        except requests.exceptions.RequestException as error:
+            raise GithubConnectionError(f"Nao foi possivel acessar a API do GitHub ({url})") from error
         return response.json() if response.status_code == 200 else {}
 
     def _should_compute_workflow_run(self, run, filters):
@@ -66,44 +75,6 @@ class ParserGithub(GenericStaticABC):
             return result
         else:
             return False
-
-    def _get_security_alerts(self, base_url, token=None):
-        """
-        Conta os alertas de seguranca abertos e fechados do repositorio.
-
-        Repositorio sem Dependabot habilitado, sem permissao de
-        security_events ou em plano que nao expoe alertas responde 403/404, e
-        nesse caso as metricas ficam de fora: apenas a medida dependente deixa
-        de ser calculada, sem interromper a extracao das demais. Lista vazia e
-        resposta valida e significa repositorio sem alerta algum.
-        """
-        per_page = 100
-        page = 1
-        open_alerts = 0
-        closed_alerts = 0
-
-        while True:
-            url = f"{base_url}/dependabot/alerts?per_page={per_page}&page={page}"
-            response = self._make_request(url, token)
-
-            if not isinstance(response, list):
-                return False
-
-            for alert in response:
-                if alert.get("state") == "open":
-                    open_alerts += 1
-                else:
-                    closed_alerts += 1
-
-            if len(response) < per_page:
-                break
-
-            page += 1
-
-        return {
-            "metrics": ["security_alerts_open", "security_alerts_closed"],
-            "values": [open_alerts, closed_alerts],
-        }
 
     def _check_requests(self, base_url, params, values, token=None):
         results = []
@@ -193,14 +164,6 @@ class ParserGithub(GenericStaticABC):
         if return_of_get_ci_feedback_times:
             metrics.extend(return_of_get_ci_feedback_times["metrics"])
             values.extend(return_of_get_ci_feedback_times["values"])
-
-        return_of_get_security_alerts = self._get_security_alerts(
-            url, token_from_github
-        )
-
-        if return_of_get_security_alerts:
-            metrics.extend(return_of_get_security_alerts["metrics"])
-            values.extend(return_of_get_security_alerts["values"])
 
         return {"metrics": metrics, "values": values, "file_paths": keys}
 
